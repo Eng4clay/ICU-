@@ -659,3 +659,512 @@
 </script>
 </body>
 </html>
+ressors)</div>
+        <button id="btnComp1" class="ctrl-btn on">Compressor 1 <span class="state">ON</span></button>
+        <button id="btnComp2" class="ctrl-btn on">Compressor 2 <span class="state">ON</span></button>
+      </div>
+
+      <div class="ctrl-group">
+        <div class="ctrl-label">باب غرفة ICU-3</div>
+        <button id="btnDoor" class="ctrl-btn off">Door <span class="state">CLOSED</span></button>
+      </div>
+
+      <div class="ctrl-group" style="margin-top:20px; padding-top:14px; border-top:1px dashed var(--grid);">
+        <div class="ctrl-label">ملاحظة</div>
+        <div style="font-size:11.5px; color:var(--text-dim); line-height:1.6;">
+          كل زر يُحدّث فورياً: حرارة القسم، الرطوبة، الضغط، ولون تدفق الهواء داخل المشهد ثلاثي الأبعاد.
+          جرّب تعطيل أكثر من نظام معاً لمشاهدة التراكم التدريجي للخلل.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <span>نموذج توضيحي — الهندسة غير مطابقة لمقياس التنفيذ الفعلي (Illustrative, not to fabrication scale).</span>
+    <span>مبني بـ Three.js — يتطلب اتصال إنترنت لتحميل المكتبة عند أول فتح للملف.</span>
+  </footer>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(function(){
+  "use strict";
+  /* ==========================================================================
+     الإعداد الأساسي للمشهد ثلاثي الأبعاد (Scene / Camera / Renderer / Controls)
+  ========================================================================== */
+  const stage = document.getElementById('stage');
+  let W = stage.clientWidth, H = stage.clientHeight;
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xEDF1F4);
+  scene.fog = new THREE.Fog(0xEDF1F4, 30, 70);
+
+  const camera = new THREE.PerspectiveCamera(40, W/H, 0.1, 300);
+  camera.position.set(20, 15, 24);
+  camera.lookAt(0, 3, 0);
+
+  const renderer = new THREE.WebGLRenderer({ antialias:true });
+  renderer.setSize(W,H); renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+  renderer.shadowMap.enabled = true;
+  stage.appendChild(renderer.domElement);
+
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true; controls.dampingFactor = 0.08;
+  controls.minDistance = 14; controls.maxDistance = 55;
+  controls.target.set(0, 3, 0);
+  controls.maxPolarAngle = Math.PI*0.49;
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0xcfd6dd, 0.75));
+  const key = new THREE.DirectionalLight(0xffffff, 0.85);
+  key.position.set(16,22,12); key.castShadow=true;
+  key.shadow.mapSize.set(1024,1024);
+  key.shadow.camera.left=-20; key.shadow.camera.right=20; key.shadow.camera.top=20; key.shadow.camera.bottom=-20;
+  scene.add(key);
+  scene.add(new THREE.DirectionalLight(0xffffff,0.3).translateX(-10).translateY(8).translateZ(-8));
+
+  /* ==========================================================================
+     دوال مساعدة عامة (صناديق، إطارات، تسميات نصية، أسهم، أنابيب)
+  ========================================================================== */
+  const allLabelSprites = [];
+  function edged(mesh,color){ const eg=new THREE.EdgesGeometry(mesh.geometry); mesh.add(new THREE.LineSegments(eg, new THREE.LineBasicMaterial({color:color||0x556270}))); }
+  function box(w,h,d,color,opts){
+    opts=opts||{};
+    const mat=new THREE.MeshStandardMaterial({color, roughness:.55, metalness:.08, transparent:opts.opacity!==undefined, opacity:opts.opacity!==undefined?opts.opacity:1});
+    const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d), mat);
+    m.castShadow=true; m.receiveShadow=true;
+    if(!opts.noEdge) edged(m, opts.edgeColor);
+    return m;
+  }
+  function sprite(text,opts){
+    opts=opts||{};
+    const cnv=document.createElement('canvas'); const cx=cnv.getContext('2d');
+    const fs=opts.fontSize||36; cx.font=`700 ${fs}px ui-sans-serif, Arial`;
+    const pad=14; const tw=cx.measureText(text).width;
+    cnv.width=tw+pad*2; cnv.height=fs*1.5;
+    cx.font=`700 ${fs}px ui-sans-serif, Arial`;
+    cx.fillStyle=opts.bg||'rgba(255,255,255,0.88)'; cx.fillRect(0,0,cnv.width,cnv.height);
+    cx.strokeStyle=opts.border||'#7C8797'; cx.lineWidth=3; cx.strokeRect(1.5,1.5,cnv.width-3,cnv.height-3);
+    cx.fillStyle=opts.color||'#26313d'; cx.textBaseline='middle'; cx.fillText(text,pad,cnv.height/2);
+    const tex=new THREE.CanvasTexture(cnv);
+    const spr=new THREE.Sprite(new THREE.SpriteMaterial({map:tex, depthTest:false}));
+    const sc=opts.scale||0.8; spr.scale.set(sc*(cnv.width/cnv.height), sc, 1); spr.renderOrder=999;
+    if(!opts.excludeFromToggle) allLabelSprites.push(spr);
+    return spr;
+  }
+  function arrowHelper(dir,origin,len,color,hw){ return new THREE.ArrowHelper(dir.clone().normalize(),origin,len,color,len*0.3,hw||len*0.16); }
+  function pipeBetween(p0,p1,radius,color,opacity){
+    const dir=new THREE.Vector3().subVectors(p1,p0); const len=dir.length();
+    const mat=new THREE.MeshStandardMaterial({color, roughness:.5, transparent:opacity!==undefined, opacity:opacity!==undefined?opacity:1});
+    const m=new THREE.Mesh(new THREE.CylinderGeometry(radius,radius,len,12), mat); m.castShadow=true;
+    m.position.copy(p0).addScaledVector(dir,0.5);
+    m.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir.clone().normalize());
+    return m;
+  }
+  function flowPoints(pA,pB,count,color,size){
+    const items=[];
+    for(let i=0;i<count;i++){
+      const mat=new THREE.MeshBasicMaterial({color, transparent:true, opacity:1});
+      const m=new THREE.Mesh(new THREE.SphereGeometry(size,8,8), mat);
+      m.userData.t=i/count; scene.add(m); items.push(m);
+    }
+    return {pA,pB,items};
+  }
+
+  /* ==========================================================================
+     الأرضية العامة
+  ========================================================================== */
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(90,90), new THREE.MeshStandardMaterial({color:0xDCE1E5, roughness:1}));
+  ground.rotation.x=-Math.PI/2; ground.position.y=-0.4; ground.receiveShadow=true;
+  scene.add(ground);
+  const gh = new THREE.GridHelper(60,60,0xC7CED4,0xE0E4E8); gh.position.y=-0.39; scene.add(gh);
+
+  /* ==========================================================================
+     ===================== الطابق العلوي — السطح (ROOFTOP) =====================
+  ========================================================================== */
+  const ROOF_Y = 6.2; // ارتفاع سطح المبنى (يفصل الطابقين)
+  const roofSlab = box(15, 0.35, 8.6, 0x8B95A0, {edgeColor:0x4a545e});
+  roofSlab.position.set(0, ROOF_Y, 0);
+  scene.add(roofSlab);
+  const roofTopLabel = sprite('ROOF LEVEL', {fontSize:26, scale:0.4, color:'#33404c', bg:'rgba(255,255,255,.85)'});
+  roofTopLabel.position.set(-6.8, ROOF_Y+0.5, -3.6);
+  scene.add(roofTopLabel);
+
+  // ---- وحدة مناولة الهواء FAHU على السطح ----
+  const ahuGroup = new THREE.Group(); ahuGroup.position.set(-3.6, ROOF_Y+0.18, -1.6); scene.add(ahuGroup);
+  const ahuW=3.6, ahuH=1.35, ahuD=1.5;
+  const ahuMesh = box(ahuW, ahuH, ahuD, 0xE7EAED, {edgeColor:0x556270});
+  ahuMesh.position.set(0, ahuH/2, 0); ahuGroup.add(ahuMesh);
+  for(let i=1;i<4;i++){
+    const seam=box(0.02, ahuH*0.8, 0.02, 0x9AA5AF, {noEdge:true});
+    seam.position.set(-ahuW/2+i*(ahuW/4), ahuH/2, ahuD/2+0.01); ahuGroup.add(seam);
+  }
+  ahuGroup.add((()=>{ const l=sprite('FAHU — AHU', {fontSize:26, scale:0.42, color:'#33404c', bg:'rgba(255,255,255,.9)'}); l.position.set(0, ahuH+0.4, ahuD/2+0.2); return l; })());
+  const ahuFan = new THREE.Mesh(new THREE.CylinderGeometry(0.26,0.26,0.08,20), new THREE.MeshStandardMaterial({color:0x8B95A0, metalness:.5, roughness:.4}));
+  ahuFan.rotation.x=Math.PI/2; ahuFan.position.set(ahuW/2-0.3, ahuH*0.55, ahuD/2+0.02); ahuGroup.add(ahuFan);
+
+  // تسميات الأقسام الداخلية (مدمجة من نموذج FAHU-20TR التفصيلي)
+  [ {x:-ahuW/2+ahuW*0.18,l:'FILTER'}, {x:-ahuW/2+ahuW*0.45,l:'COIL'}, {x:-ahuW/2+ahuW*0.75,l:'FAN'} ].forEach(s=>{
+    const tick=box(0.02,0.1,ahuD*0.85,0x8B95A0,{noEdge:true}); tick.position.set(s.x,ahuH+0.01,0); ahuGroup.add(tick);
+    const lbl=sprite(s.l,{fontSize:18,scale:0.24,color:'#5a6672',bg:'rgba(255,255,255,.85)'}); lbl.position.set(s.x,ahuH+0.22,0); ahuGroup.add(lbl);
+  });
+
+  // شارتا حالة دائرتي التبريد — CCT-2 معطلة دائماً (عطل ميكانيكي منفصل، لا يتأثر بالأزرار)
+  function circuitBadge(label, ok, x){
+    const g=new THREE.Group();
+    const c=box(0.32,0.22,0.04, ok?0x34D399:0xFF4757, {edgeColor:0x2b2b2b}); c.position.set(x, ahuH+0.5, ahuD/2-0.25); g.add(c);
+    const lbl=sprite(label+': '+(ok?'COLD':'NOT COLD'), {fontSize:20, scale:0.26, color:ok?'#0d6b46':'#8f1d29', bg:ok?'rgba(217,250,235,.95)':'rgba(255,224,224,.95)', border:ok?'#34D399':'#FF4757'});
+    lbl.position.set(x, ahuH+0.8, ahuD/2-0.25); g.add(lbl);
+    return g;
+  }
+  ahuGroup.add(circuitBadge('CCT-1', true, -ahuW/2+ahuW*0.38));
+  ahuGroup.add(circuitBadge('CCT-2', false, -ahuW/2+ahuW*0.52));
+
+  // سهم هواء خارجي ساخن (Fresh Air Intake) عند مدخل الوحدة — دائم بغض النظر عن الأزرار
+  const oaOrigin = new THREE.Vector3(-ahuW/2-0.15, ahuH+0.9, -0.6).add(ahuGroup.position);
+  const oaArrow = arrowHelper(new THREE.Vector3(0.2,-0.55,0.4), oaOrigin, 1.1, 0xFF5C4D, 0.24);
+  scene.add(oaArrow);
+  const oaLabel = sprite('FRESH AIR 110°F', {fontSize:20, scale:0.3, color:'#8a2418', bg:'rgba(255,232,228,.92)', border:'#FF5C4D'});
+  oaLabel.position.copy(oaOrigin).add(new THREE.Vector3(0,0.3,0));
+  scene.add(oaLabel);
+
+  // ---- مروحة العادم (Exhaust Fan) على السطح ----
+  const exhaustGroup = new THREE.Group(); exhaustGroup.position.set(-6.6, ROOF_Y+0.55, 1.8); scene.add(exhaustGroup);
+  const exBase = box(0.5,0.35,0.5, 0xB9BEC2, {edgeColor:0x8a8f94}); exBase.position.y=0.17; exhaustGroup.add(exBase);
+  const exCowlPivot = new THREE.Group(); exCowlPivot.position.y=0.42; exhaustGroup.add(exCowlPivot);
+  const exCowl = new THREE.Mesh(new THREE.CylinderGeometry(0.32,0.36,0.18,20), new THREE.MeshStandardMaterial({color:0x2b2f33, metalness:.4, roughness:.5}));
+  exCowlPivot.add(exCowl);
+  for(let i=0;i<4;i++){ const blade=box(0.03,0.22,0.06,0x555b61,{noEdge:true}); blade.rotation.y=i*Math.PI/2; blade.position.y=0.02; exCowlPivot.add(blade); }
+  exhaustGroup.add((()=>{ const l=sprite('EXHAUST FAN', {fontSize:22, scale:0.34, color:'#33404c', bg:'rgba(255,255,255,.88)'}); l.position.set(0,0.95,0); return l; })());
+
+  // ---- وحدة التكثيف ACCU (تكميلية بصرياً) ----
+  const accuGroup = new THREE.Group(); accuGroup.position.set(1.6, ROOF_Y+0.18, 1.9); scene.add(accuGroup);
+  const accuMesh = box(1.7,1.5,1.4, 0xEDEFF1, {edgeColor:0x556270}); accuMesh.position.y=0.75; accuGroup.add(accuMesh);
+  [-0.35,0.35].forEach(dx=>{
+    const cowl=new THREE.Mesh(new THREE.CylinderGeometry(0.32,0.35,0.16,20), new THREE.MeshStandardMaterial({color:0x2b2f33, metalness:.4, roughness:.5}));
+    cowl.position.set(dx,1.58,0); accuGroup.add(cowl);
+  });
+  accuGroup.add((()=>{ const l=sprite('ACCU', {fontSize:22, scale:0.34, color:'#33404c', bg:'rgba(255,255,255,.88)'}); l.position.set(0,1.95,0); return l; })());
+
+  // خطوط تبريد رفيعة بين AHU وACCU (تفصيل ميداني مدمج من النموذج السابق)
+  const refPipeA0 = new THREE.Vector3(ahuGroup.position.x+ahuW/2-0.15, ROOF_Y+ahuH*0.6, ahuGroup.position.z+ahuD/2-0.3);
+  const refPipeA1 = new THREE.Vector3(accuGroup.position.x-0.7, ROOF_Y+0.9, accuGroup.position.z-0.5);
+  scene.add(pipeBetween(refPipeA0, refPipeA1, 0.03, 0x8a95a0));
+  scene.add(pipeBetween(refPipeA0.clone().add(new THREE.Vector3(0,0.1,0)), refPipeA1.clone().add(new THREE.Vector3(0,0.1,0)), 0.025, 0xb5bcc2));
+
+  /* ==========================================================================
+     ===================== الطابق السفلي — قسم العناية المركزة (ICU) =====================
+     التخطيط مبني على المسقط الأفقي المرفق: ممر مركزي + 5 غرف ICU + غرفة خدمات
+  ========================================================================== */
+  const ICU_Y = 0;      // مستوى أرضية القسم
+  const WALL_H = 1.4;   // ارتفاع الجدران (تخطيطي)
+  const icuFloorPlane = new THREE.Mesh(new THREE.PlaneGeometry(14.5,8), new THREE.MeshStandardMaterial({color:0xF3EEE4, roughness:1}));
+  icuFloorPlane.rotation.x=-Math.PI/2; icuFloorPlane.position.set(0.2, ICU_Y+0.01, 0.3); icuFloorPlane.receiveShadow=true;
+  scene.add(icuFloorPlane);
+
+  function wallSeg(w,d,x,z,color){
+    const wl = box(w, WALL_H, d, color||0xD9CBAE, {edgeColor:0x8a7a54, opacity:0.55});
+    wl.position.set(x, ICU_Y+WALL_H/2, z);
+    scene.add(wl);
+    return wl;
+  }
+  // ممر مركزي (حدود بصرية فقط)
+  wallSeg(11.5, 0.12, -0.7, -2.0, 0xC9BFAA); // جدار الممر العلوي
+  wallSeg(0.12, 4.4, -6.4, -0.1, 0xC9BFAA);  // جدار غرفة الخدمات
+
+  // ---- غرفة الخدمات (Utility) ----
+  const utilRoom = box(2.6, WALL_H, 2.0, 0xE4D9C0, {edgeColor:0x8a7a54, opacity:0.4});
+  utilRoom.position.set(-6.0, WALL_H/2, -3.3); scene.add(utilRoom);
+  scene.add((()=>{ const l=sprite('UTILITY', {fontSize:22, scale:0.32, color:'#5a4a20', bg:'rgba(255,250,235,.88)'}); l.position.set(-6.0, WALL_H+0.35, -3.3); return l; })());
+
+  // ---- الممر (label) ----
+  scene.add((()=>{ const l=sprite('CORRIDOR', {fontSize:24, scale:0.36, color:'#556270', bg:'rgba(255,255,255,.85)'}); l.position.set(-2.0, WALL_H+0.5, -0.4); return l; })());
+
+  // ---- 5 غرف العناية المركزة (بعددها الحقيقي) على طول الممر ----
+  const ICU_COUNT = 5;
+  const roomW = 2.0, roomD = 2.6, roomGap = 0.15;
+  const rowStartX = -1.0;
+  const icuRooms = []; // لتخزين مراجع كل غرفة (جدران/سرير/فتحات/باب)
+
+  for(let i=0;i<ICU_COUNT;i++){
+    const rx = rowStartX + i*(roomW+roomGap);
+    const rz = 2.1;
+    const rg = new THREE.Group(); rg.position.set(rx, 0, rz); scene.add(rg);
+
+    const roomShell = box(roomW, WALL_H, roomD, 0xF0EAD8, {edgeColor:0x8a7a54, opacity:0.32});
+    roomShell.position.y = WALL_H/2; rg.add(roomShell);
+
+    // سرير
+    const bed = box(roomW*0.55, 0.35, roomD*0.32, 0xB7C1CE, {edgeColor:0x556270});
+    bed.position.set(0, 0.2, roomD*0.15); rg.add(bed);
+
+    // فتحة تغذية بالسقف (Diffuser)
+    const diffuser = box(0.35,0.04,0.35, 0xCFD5DA, {noEdge:true});
+    diffuser.position.set(-roomW*0.2, WALL_H-0.02, -roomD*0.15); rg.add(diffuser);
+
+    // فتحة سحب الهواء الراجع (Return Grille) على الجدار
+    const grille = box(0.32,0.32,0.03, 0x556270, {noEdge:true});
+    grille.position.set(roomW/2-0.02, WALL_H*0.6, -roomD*0.25); grille.rotation.y=Math.PI/2; rg.add(grille);
+
+    const roomLabel = sprite('ICU-'+(i+1), {fontSize:22, scale:0.3, color:'#556270', bg:'rgba(255,255,255,.85)'});
+    roomLabel.position.set(0, WALL_H+0.3, 0); rg.add(roomLabel);
+
+    icuRooms.push({ group:rg, diffuser, grille, x:rx, z:rz });
+  }
+
+  // ---- باب غرفة ICU-3 (قابل للفتح/الإغلاق) ----
+  const doorRoom = icuRooms[2];
+  const doorPivot = new THREE.Group();
+  doorPivot.position.set(doorRoom.x - roomW/2, 0, doorRoom.z - roomD/2 + 0.35);
+  scene.add(doorPivot);
+  const doorMesh = box(0.7, WALL_H*0.92, 0.05, 0x9C7A45, {edgeColor:0x5c451f});
+  doorMesh.position.set(0.35, WALL_H*0.46, 0);
+  doorPivot.add(doorMesh);
+  doorPivot.add((()=>{ const l=sprite('DOOR', {fontSize:18, scale:0.24, color:'#5c451f', bg:'rgba(255,250,235,.85)'}); l.position.set(0.35, WALL_H+0.25, 0); return l; })());
+
+  /* ==========================================================================
+     ============== أنابيب الربط بين الطابقين (مجرى التغذية + الراجع) ==============
+  ========================================================================== */
+  // نقطة تجمّع مركزية في الممر أسفل السطح
+  const manifoldTop = new THREE.Vector3(-1.6, ROOF_Y, -1.6);
+  const manifoldBottom = new THREE.Vector3(-1.6, WALL_H+0.15, -0.4);
+
+  // مجرى التغذية الرئيسي (يخرج من AHU وينزل عبر السطح إلى الممر)
+  const ahuOutlet = new THREE.Vector3(ahuGroup.position.x+ahuW/2, ROOF_Y+ahuH*0.5, ahuGroup.position.z);
+  const supplyMain = pipeBetween(ahuOutlet, manifoldTop, 0.16, 0x2ECC71);
+  scene.add(supplyMain);
+  const supplyDrop = pipeBetween(manifoldTop, manifoldBottom, 0.16, 0x2ECC71);
+  scene.add(supplyDrop);
+
+  // سهم واضح عند مخرج التغذية من الوحدة — يوضح خروج الهواء المُكيَّف نحو القسم
+  const supplyExitArrow = arrowHelper(new THREE.Vector3().subVectors(manifoldTop, ahuOutlet), ahuOutlet, 0.9, 0x2ECC71, 0.3);
+  scene.add(supplyExitArrow);
+  const supplyExitLabel = sprite('SUPPLY OUT → TO DEPARTMENT (التغذية إلى القسم)', {fontSize:19, scale:0.28, color:'#0d6b46', bg:'rgba(217,250,235,.95)', border:'#2ECC71'});
+  supplyExitLabel.position.copy(ahuOutlet).add(new THREE.Vector3(0,0.45,0));
+  scene.add(supplyExitLabel);
+
+  // تفريعات التغذية من نقطة التجمّع إلى كل غرفة (فتحة السقف)
+  const supplyBranches = icuRooms.map(r=>{
+    const target = new THREE.Vector3(r.group.position.x-roomW*0.2, WALL_H, r.group.position.z-roomD*0.15);
+    const pipe = pipeBetween(manifoldBottom, target, 0.06, 0x2ECC71, 0.85);
+    scene.add(pipe);
+    return { pipe, a:manifoldBottom, b:target };
+  });
+
+  // مجرى الهواء الراجع (القابل للتعطيل) — من فتحات الغرف صعوداً عبر السطح إلى AHU
+  const returnManifoldBottom = new THREE.Vector3(-1.0, WALL_H+0.15, -0.9);
+  const returnManifoldTop = new THREE.Vector3(-1.0, ROOF_Y, -0.9);
+  const ahuReturnPort = new THREE.Vector3(ahuGroup.position.x-ahuW/2+0.3, ROOF_Y+ahuH*0.9, ahuGroup.position.z);
+
+  const returnBranches = icuRooms.map(r=>{
+    const src = new THREE.Vector3(r.group.position.x+roomW/2-0.02, WALL_H*0.6, r.group.position.z-roomD*0.25);
+    const pipe = pipeBetween(src, returnManifoldBottom, 0.06, 0xF1C40F, 0.85);
+    scene.add(pipe);
+    return { pipe, a:src, b:returnManifoldBottom, mesh:pipe };
+  });
+  const returnRiser = pipeBetween(returnManifoldBottom, returnManifoldTop, 0.16, 0xF1C40F);
+  scene.add(returnRiser);
+  const returnToAHU = pipeBetween(returnManifoldTop, ahuReturnPort, 0.16, 0xF1C40F);
+  scene.add(returnToAHU);
+  const returnDucts = [returnRiser, returnToAHU, ...returnBranches.map(b=>b.pipe)];
+
+  // سهم واضح عند دخول الراجع للوحدة — يوضح عودة الهواء من القسم لعملية الخلط
+  const returnEntryArrow = arrowHelper(new THREE.Vector3().subVectors(ahuReturnPort, returnManifoldTop), returnManifoldTop.clone().lerp(ahuReturnPort,0.4), 0.8, 0xF1C40F, 0.28);
+  scene.add(returnEntryArrow);
+  const returnEntryLabel = sprite('RETURN IN ← FROM DEPARTMENT (الراجع من القسم)', {fontSize:19, scale:0.28, color:'#8a6d10', bg:'rgba(255,249,219,.95)', border:'#F1C40F'});
+  returnEntryLabel.position.copy(returnManifoldTop).add(new THREE.Vector3(0,0.5,-0.2));
+  scene.add(returnEntryLabel);
+
+  // غطاء إغلاق يظهر عند تعطيل الـ Return
+  const returnSealCap = new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.2,0.08,18), new THREE.MeshStandardMaterial({color:0xFF4757}));
+  returnSealCap.rotation.x = Math.PI/2;
+  returnSealCap.position.copy(ahuReturnPort);
+  returnSealCap.visible = false;
+  scene.add(returnSealCap);
+  const returnSealLabel = sprite('RETURN DISABLED', {fontSize:22, scale:0.34, color:'#8f1d29', bg:'rgba(255,224,224,.95)', border:'#FF4757'});
+  returnSealLabel.position.copy(ahuReturnPort).add(new THREE.Vector3(0,0.4,0));
+  returnSealLabel.visible = false;
+  scene.add(returnSealLabel);
+
+  // نقطة خلط مضيئة عند اتصال الراجع بالوحدة — تنبض عند تفعيل Return (مدمجة من نموذج FAHU التفصيلي)
+  const mixGlow = new THREE.Mesh(new THREE.SphereGeometry(0.14,16,16), new THREE.MeshBasicMaterial({color:0xFF9142, transparent:true, opacity:0}));
+  mixGlow.position.copy(ahuReturnPort);
+  scene.add(mixGlow);
+  const mixLabel = sprite('MIXING POINT', {fontSize:18, scale:0.26, color:'#8a4310', bg:'rgba(255,240,225,.95)', border:'#FF9142'});
+  mixLabel.position.copy(ahuReturnPort).add(new THREE.Vector3(0,0.4,-0.3));
+  mixLabel.visible = false;
+  scene.add(mixLabel);
+
+  /* ==========================================================================
+     جسيمات تدفق الهواء المتحركة (تغذية + راجع)
+  ========================================================================== */
+  const supplyFlowMain = flowPoints(ahuOutlet, manifoldTop, 5, 0x2ECC71, 0.09);
+  const supplyFlowDrop = flowPoints(manifoldTop, manifoldBottom, 5, 0x2ECC71, 0.09);
+  const supplyFlowBranches = supplyBranches.map(b=> flowPoints(b.a, b.b, 3, 0x2ECC71, 0.075));
+
+  const returnFlowBranches = returnBranches.map(b=> flowPoints(b.a, b.b, 3, 0xF1C40F, 0.075));
+  const returnFlowRiser = flowPoints(returnManifoldBottom, returnManifoldTop, 5, 0xF1C40F, 0.09);
+  const returnFlowToAHU = flowPoints(returnManifoldTop, ahuReturnPort, 5, 0xF1C40F, 0.09);
+
+  /* ==========================================================================
+     الحالة العامة والفيزياء المبسطة للمحاكاة
+  ========================================================================== */
+  const state = {
+    returnEnabled:true, exhaustOn:true, comp1On:true, comp2On:true, doorOpen:false,
+    temp:20.0, hum:50.0, press:-2.5, labelsVisible:true
+  };
+  function lerp(a,b,t){ return a+(b-a)*t; }
+
+  function computeTargets(){
+    const compWorking = (state.comp1On?1:0)+(state.comp2On?1:0);
+    let temp = 20 + (state.returnEnabled?0:2.5) + (state.exhaustOn?0:1.5) + ((2-compWorking)*1.8) + (state.doorOpen?0.8:0);
+    let hum = 50 + (state.exhaustOn?0:18) + (state.returnEnabled?0:6) + (state.doorOpen?6:0);
+    let press = -2.5 + (state.doorOpen?4.5:0) + (state.exhaustOn?0:3.5) + (state.returnEnabled?0:1);
+    temp = Math.min(temp, 29); hum = Math.min(hum, 88); press = Math.min(press, 4.5);
+    return { temp, hum, press, compWorking };
+  }
+
+  /* ==========================================================================
+     حلقة الرسم والتحديث (Animation Loop)
+  ========================================================================== */
+  let doorAngle = 0, exFanPhase = 0;
+  function animate(){
+    requestAnimationFrame(animate);
+    const targets = computeTargets();
+    state.temp = lerp(state.temp, targets.temp, 0.03);
+    state.hum  = lerp(state.hum,  targets.hum,  0.03);
+    state.press= lerp(state.press,targets.press,0.05);
+
+    // دوران المراوح
+    ahuFan.rotation.z += state.comp1On||state.comp2On ? 0.18 : 0.03;
+    exFanPhase += state.exhaustOn ? 0.16 : 0.01;
+    exCowlPivot.rotation.y = exFanPhase;
+
+    // الباب
+    const targetDoorAngle = state.doorOpen ? -Math.PI*0.42 : 0;
+    doorAngle = lerp(doorAngle, targetDoorAngle, 0.08);
+    doorPivot.rotation.y = doorAngle;
+
+    // جسيمات التغذية (تعمل دوماً باللون الأخضر، أبطأ لو الضواغط متوقفة)
+    const supplySpeed = 0.008 * (0.4 + 0.3*(state.comp1On?1:0) + 0.3*(state.comp2On?1:0));
+    [supplyFlowMain, supplyFlowDrop, ...supplyFlowBranches].forEach(flow=>{
+      flow.items.forEach(m=>{
+        m.userData.t += supplySpeed; if(m.userData.t>1) m.userData.t-=1;
+        m.position.copy(flow.pA).lerp(flow.pB, m.userData.t);
+      });
+    });
+
+    // جسيمات الراجع: تتحرك فقط عند تفعيل Return، وإلا تبقى ثابتة/مخفية قرب الفتحة (ركود)
+    const raOpacity = state.returnEnabled ? 0.95 : 0.35;
+    const raColorHex = state.returnEnabled ? 0xF1C40F : 0xFF4757;
+    const raColor = new THREE.Color(raColorHex);
+    [...returnFlowBranches, returnFlowRiser, returnFlowToAHU].forEach(flow=>{
+      flow.items.forEach(m=>{
+        const spd = state.returnEnabled ? 0.009 : 0.0;
+        m.userData.t += spd; if(m.userData.t>1) m.userData.t-=1;
+        m.position.copy(flow.pA).lerp(flow.pB, m.userData.t);
+        m.material.color.copy(raColor);
+        m.material.opacity = raOpacity;
+        m.visible = true;
+      });
+    });
+    returnDucts.forEach(d=> d.material.color.copy(raColor));
+    returnSealCap.visible = !state.returnEnabled;
+    returnSealLabel.visible = state.labelsVisible && !state.returnEnabled;
+    returnEntryArrow.visible = state.returnEnabled;
+    returnEntryLabel.visible = state.labelsVisible && state.returnEnabled;
+
+    // نقطة الخلط: تتوهج وتنبض فقط عند تفعيل الـ Return
+    const mixPulse = 0.55 + 0.25*Math.sin(performance.now()*0.004);
+    mixGlow.material.opacity = state.returnEnabled ? mixPulse : 0;
+    mixGlow.scale.setScalar(1 + 0.15*Math.sin(performance.now()*0.004));
+    mixLabel.visible = state.labelsVisible && state.returnEnabled;
+
+    // تحديث لوحة HUD
+    updateHUD(targets.compWorking);
+
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(animate);
+
+  /* ==========================================================================
+     تحديث لوحة HUD والتنبيه العلوي
+  ========================================================================== */
+  const elTemp=document.getElementById('hudTemp'), elHum=document.getElementById('hudHum'), elPress=document.getElementById('hudPress'),
+        elReturn=document.getElementById('hudReturn'), elComp=document.getElementById('hudComp'), elExhaust=document.getElementById('hudExhaust'),
+        elDoor=document.getElementById('hudDoor'), alertBox=document.getElementById('alertBox');
+
+  function updateHUD(compWorking){
+    elTemp.textContent = state.temp.toFixed(1)+'°C';
+    elTemp.className = 'v ' + (state.temp>24 ? 'bad' : state.temp>21.5 ? 'warn' : 'good');
+    elHum.textContent = Math.round(state.hum)+'%';
+    elHum.className = 'v ' + (state.hum>65 ? 'bad' : state.hum>55 ? 'warn' : 'good');
+    elPress.textContent = (state.press>=0?'+':'')+state.press.toFixed(1)+' Pa';
+    elPress.className = 'v ' + (state.press>0 ? 'bad' : state.press>-1 ? 'warn' : 'good');
+    elReturn.textContent = state.returnEnabled ? '✅ نشط' : '❌ معطل';
+    elReturn.className = 'v ' + (state.returnEnabled ? 'good':'bad');
+    elComp.textContent = (compWorking===2?'✅':compWorking===1?'⚠️':'❌') + ' ' + compWorking + '/2 شغّالين';
+    elComp.className = 'v ' + (compWorking===2?'good':compWorking===1?'warn':'bad');
+    elExhaust.textContent = state.exhaustOn ? '✅ تعمل' : '❌ متوقفة';
+    elExhaust.className = 'v ' + (state.exhaustOn?'good':'bad');
+    elDoor.textContent = state.doorOpen ? 'مفتوح' : 'مغلق';
+    elDoor.className = 'v ' + (state.doorOpen?'warn':'good');
+
+    const critical = state.temp>24.5 || state.press>0 || state.hum>65;
+    if(critical){
+      alertBox.className='danger';
+      alertBox.innerHTML='⚠ خلل تشغيلي — تحقق من حالة RETURN / مروحة العادم / الضواغط. الحرارة والرطوبة والضغط خارج النطاق الآمن.';
+    } else {
+      alertBox.className='ok';
+      alertBox.innerHTML='✓ جميع الأنظمة تعمل ضمن النطاق الطبيعي — حرارة '+state.temp.toFixed(1)+'°C · رطوبة '+Math.round(state.hum)+'% · ضغط '+state.press.toFixed(1)+' Pa';
+    }
+  }
+
+  /* ==========================================================================
+     ربط أزرار التحكم بالحالة
+  ========================================================================== */
+  function wireToggle(btnId, key, onLabel, offLabel){
+    const btn = document.getElementById(btnId);
+    btn.addEventListener('click', ()=>{
+      state[key] = !state[key];
+      btn.classList.toggle('on', state[key]);
+      btn.classList.toggle('off', !state[key]);
+      btn.querySelector('.state').textContent = state[key] ? onLabel : offLabel;
+    });
+  }
+  wireToggle('btnReturn','returnEnabled','ENABLED','DISABLED');
+  document.getElementById('btnReturn').addEventListener('click', ()=>{
+    const cap = document.getElementById('returnModeCaption');
+    if(state.returnEnabled){
+      cap.className = 'mode-caption good';
+      cap.textContent = '✓ PROPOSED — RETURN OPENED — الوضع المقترح: الراجع مفتوح';
+    } else {
+      cap.className = 'mode-caption bad';
+      cap.textContent = '⚠ EXISTING — RETURN SEALED — الوضع الحالي: الراجع مغلق';
+    }
+  });
+  wireToggle('btnExhaust','exhaustOn','ON','OFF');
+  wireToggle('btnComp1','comp1On','ON','OFF');
+  wireToggle('btnComp2','comp2On','ON','OFF');
+  wireToggle('btnDoor','doorOpen','OPEN','CLOSED');
+
+  document.getElementById('btnLabels').addEventListener('click', function(){
+    state.labelsVisible = !state.labelsVisible;
+    allLabelSprites.forEach(s=> s.visible = state.labelsVisible);
+    this.textContent = state.labelsVisible ? '🏷 إخفاء التسميات' : '🏷 إظهار التسميات';
+  });
+
+  /* ==========================================================================
+     تجاوب مع تغيير حجم الشاشة
+  ========================================================================== */
+  window.addEventListener('resize', ()=>{
+    W = stage.clientWidth; H = stage.clientHeight;
+    camera.aspect = W/H; camera.updateProjectionMatrix();
+    renderer.setSize(W,H);
+  });
+})();
+</script>
+</body>
+</html>
